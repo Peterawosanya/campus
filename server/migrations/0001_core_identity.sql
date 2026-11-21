@@ -25,7 +25,7 @@ school management, authentication, role-based access control, and audit logging.
 - Physical campuses belonging to a school. Supports multi-campus school groups.
 
 ### user_profiles
-- Application-level user profile linked 1:1 to `auth.users`.
+- Application-level user profile linked 1:1 to `public.users`.
 - Fields: first_name, last_name, email, phone, avatar_url, is_active.
 
 ### school_memberships
@@ -58,7 +58,7 @@ school management, authentication, role-based access control, and audit logging.
 - can_manage_school(school_id): checks platform_admin, school_owner, or school_admin.
 
 ## Notes
-1. user_profiles.id references auth.users(id) — 1:1 mapping.
+1. user_profiles.id references public.users(id) — 1:1 mapping.
 2. school_memberships.role is an enum ensuring only valid roles.
 3. Auto-trigger creates a user_profile row on auth signup.
 4. All timestamps use timestamptz with now() defaults.
@@ -117,7 +117,7 @@ CREATE TABLE IF NOT EXISTS public.campuses (
   created_at timestamptz NOT NULL DEFAULT now()
 );
 
--- User profiles (1:1 with auth.users)
+-- User profiles (1:1 with public.users)
 CREATE TABLE IF NOT EXISTS public.user_profiles (
   id uuid PRIMARY KEY REFERENCES public.users(id) ON DELETE CASCADE,
   first_name text NOT NULL,
@@ -168,7 +168,7 @@ CREATE TABLE IF NOT EXISTS public.school_settings (
 CREATE TABLE IF NOT EXISTS public.audit_logs (
   id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
   school_id uuid REFERENCES public.schools(id) ON DELETE CASCADE,
-  actor_user_id uuid REFERENCES auth.users(id),
+  actor_user_id uuid REFERENCES public.users(id),
   action text NOT NULL,
   entity_type text,
   entity_id uuid,
@@ -188,7 +188,7 @@ SET search_path = public
 AS $$
   SELECT EXISTS (
     SELECT 1 FROM public.school_memberships sm
-    WHERE sm.user_id = auth.uid()
+    WHERE sm.user_id = public.current_user_id()
       AND sm.role = 'platform_admin'
       AND sm.is_active = true
   );
@@ -202,7 +202,7 @@ SET search_path = public
 AS $$
   SELECT EXISTS (
     SELECT 1 FROM public.school_memberships sm
-    WHERE sm.user_id = auth.uid()
+    WHERE sm.user_id = public.current_user_id()
       AND sm.school_id = p_school_id
       AND sm.is_active = true
   ) OR public.is_platform_admin();
@@ -216,7 +216,7 @@ SET search_path = public
 AS $$
   SELECT EXISTS (
     SELECT 1 FROM public.school_memberships sm
-    WHERE sm.user_id = auth.uid()
+    WHERE sm.user_id = public.current_user_id()
       AND sm.school_id = p_school_id
       AND sm.role = p_role
       AND sm.is_active = true
@@ -231,7 +231,7 @@ SET search_path = public
 AS $$
   SELECT EXISTS (
     SELECT 1 FROM public.school_memberships sm
-    WHERE sm.user_id = auth.uid()
+    WHERE sm.user_id = public.current_user_id()
       AND sm.school_id = p_school_id
       AND sm.role IN ('platform_admin', 'school_owner', 'school_admin')
       AND sm.is_active = true
@@ -325,11 +325,11 @@ CREATE POLICY "delete_campuses" ON public.campuses FOR DELETE
 DROP POLICY IF EXISTS "select_own_profile" ON public.user_profiles;
 CREATE POLICY "select_own_profile" ON public.user_profiles FOR SELECT
   TO authenticated USING (
-    id = auth.uid()
+    id = public.current_user_id()
     OR EXISTS (
       SELECT 1 FROM public.school_memberships sm1
       JOIN public.school_memberships sm2 ON sm1.school_id = sm2.school_id
-      WHERE sm1.user_id = auth.uid()
+      WHERE sm1.user_id = public.current_user_id()
         AND sm2.user_id = user_profiles.id
         AND sm1.is_active = true
         AND sm2.is_active = true
@@ -338,12 +338,12 @@ CREATE POLICY "select_own_profile" ON public.user_profiles FOR SELECT
 
 DROP POLICY IF EXISTS "insert_own_profile" ON public.user_profiles;
 CREATE POLICY "insert_own_profile" ON public.user_profiles FOR INSERT
-  TO authenticated WITH CHECK (id = auth.uid());
+  TO authenticated WITH CHECK (id = public.current_user_id());
 
 DROP POLICY IF EXISTS "update_own_profile" ON public.user_profiles;
 CREATE POLICY "update_own_profile" ON public.user_profiles FOR UPDATE
-  TO authenticated USING (id = auth.uid())
-  WITH CHECK (id = auth.uid());
+  TO authenticated USING (id = public.current_user_id())
+  WITH CHECK (id = public.current_user_id());
 
 -- ---- school_memberships ----
 DROP POLICY IF EXISTS "select_memberships" ON public.school_memberships;
@@ -383,9 +383,9 @@ CREATE POLICY "insert_staff_profiles" ON public.staff_profiles FOR INSERT
 DROP POLICY IF EXISTS "update_staff_profiles" ON public.staff_profiles;
 CREATE POLICY "update_staff_profiles" ON public.staff_profiles FOR UPDATE
   TO authenticated USING (
-    public.can_manage_school(school_id) OR user_id = auth.uid()
+    public.can_manage_school(school_id) OR user_id = public.current_user_id()
   ) WITH CHECK (
-    public.can_manage_school(school_id) OR user_id = auth.uid()
+    public.can_manage_school(school_id) OR user_id = public.current_user_id()
   );
 
 -- ---- school_settings ----
@@ -437,6 +437,6 @@ CREATE TRIGGER trg_school_settings_updated_at
   FOR EACH ROW EXECUTE FUNCTION public.update_updated_at();
 
 -- LOCAL PORT NOTE: the Supabase auth.signup trigger (handle_new_user /
--- on_auth_user_created on auth.users) is intentionally not recreated here.
+-- on_auth_user_created on public.users) is intentionally not recreated here.
 -- In the local architecture, user creation and profile creation happen in the
 -- same application transaction inside the Fastify auth service (Step 2).

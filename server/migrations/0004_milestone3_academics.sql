@@ -359,7 +359,7 @@ AS $$
     OR EXISTS (
       SELECT 1 FROM public.students s
       JOIN public.school_memberships sm ON sm.school_id = s.school_id AND sm.user_id = s.user_id
-      WHERE s.school_id = p_school_id AND s.id = p_student_id AND s.user_id = auth.uid()
+      WHERE s.school_id = p_school_id AND s.id = p_student_id AND s.user_id = public.current_user_id()
         AND sm.role = 'student' AND sm.is_active
     );
 $$;
@@ -431,7 +431,7 @@ BEGIN
       RAISE EXCEPTION 'Published results require administrator authorization and a correction reason';
     END IF;
     INSERT INTO public.result_history(school_id, result_id, actor_user_id, action, reason, snapshot)
-    VALUES (OLD.school_id, OLD.id, auth.uid(), 'published_result_updated',
+    VALUES (OLD.school_id, OLD.id, public.current_user_id(), 'published_result_updated',
       current_setting('app.result_correction_reason', true), to_jsonb(OLD));
   END IF;
   RETURN NEW;
@@ -496,7 +496,7 @@ BEGIN
   v_id := COALESCE(NEW.id, OLD.id);
   v_action := TG_TABLE_NAME || '_' || lower(TG_OP);
   INSERT INTO public.audit_logs(school_id, actor_user_id, action, entity_type, entity_id, details)
-  VALUES (v_school_id, auth.uid(), v_action, TG_TABLE_NAME, v_id, '{}'::jsonb);
+  VALUES (v_school_id, public.current_user_id(), v_action, TG_TABLE_NAME, v_id, '{}'::jsonb);
   IF TG_OP = 'DELETE' THEN RETURN OLD; END IF;
   RETURN NEW;
 END;
@@ -508,7 +508,7 @@ RETURNS boolean LANGUAGE sql STABLE SECURITY DEFINER SET search_path = public AS
     SELECT 1 FROM public.school_memberships sm
     JOIN public.staff_profiles sp ON sp.school_id = sm.school_id AND sp.user_id = sm.user_id
     JOIN public.teacher_assignments ta ON ta.school_id = sp.school_id AND ta.staff_profile_id = sp.id
-    WHERE sm.school_id = p_school_id AND sm.user_id = auth.uid() AND sm.role = 'teacher' AND sm.is_active
+    WHERE sm.school_id = p_school_id AND sm.user_id = public.current_user_id() AND sm.role = 'teacher' AND sm.is_active
       AND sp.status = 'active' AND ta.class_section_id = p_section_id
       AND (ta.subject_id = p_subject_id OR ta.subject_id IS NULL)
   );
@@ -523,18 +523,18 @@ RETURNS integer LANGUAGE plpgsql SECURITY DEFINER SET search_path = public AS $$
 DECLARE v_record jsonb; v_enrollment public.enrollments%ROWTYPE; v_count integer := 0;
   v_is_manager boolean := public.can_manage_academics(p_school_id);
 BEGIN
-  IF auth.uid() IS NULL OR NOT v_is_manager AND NOT EXISTS (
+  IF public.current_user_id() IS NULL OR NOT v_is_manager AND NOT EXISTS (
     SELECT 1 FROM public.teacher_assignments ta JOIN public.staff_profiles sp
       ON sp.school_id = ta.school_id AND sp.id = ta.staff_profile_id
     JOIN public.school_memberships sm ON sm.school_id = sp.school_id AND sm.user_id = sp.user_id
     WHERE ta.school_id = p_school_id AND ta.class_section_id = p_class_section_id
-      AND sp.user_id = auth.uid() AND sp.status = 'active' AND sm.role = 'teacher' AND sm.is_active
+      AND sp.user_id = public.current_user_id() AND sp.status = 'active' AND sm.role = 'teacher' AND sm.is_active
   ) AND NOT EXISTS (
     SELECT 1 FROM public.class_sections cs JOIN public.staff_profiles sp
       ON sp.school_id = cs.school_id AND sp.id = cs.class_teacher_id
     JOIN public.school_memberships sm ON sm.school_id = sp.school_id AND sm.user_id = sp.user_id
     WHERE cs.school_id = p_school_id AND cs.id = p_class_section_id
-      AND sp.user_id = auth.uid() AND sp.status = 'active' AND sm.role = 'teacher' AND sm.is_active
+      AND sp.user_id = public.current_user_id() AND sp.status = 'active' AND sm.role = 'teacher' AND sm.is_active
   ) THEN RAISE EXCEPTION 'Not authorized for this class attendance register'; END IF;
   IF p_date > CURRENT_DATE OR (p_date < CURRENT_DATE AND NOT v_is_manager) THEN
     RAISE EXCEPTION 'Only administrators may enter backdated attendance';
@@ -573,11 +573,11 @@ BEGIN
       (SELECT t.id FROM public.academic_terms t WHERE t.school_id = p_school_id
         AND t.academic_session_id = v_enrollment.academic_session_id AND p_date BETWEEN t.starts_on AND t.ends_on
         AND (p_term_id IS NULL OR t.id = p_term_id) LIMIT 1),
-      p_date, (v_record->>'status')::public.attendance_status, NULLIF(v_record->>'remarks', ''), auth.uid(), auth.uid()
+      p_date, (v_record->>'status')::public.attendance_status, NULLIF(v_record->>'remarks', ''), public.current_user_id(), public.current_user_id()
     )
     ON CONFLICT (school_id, student_id, attendance_date) DO UPDATE SET
       enrollment_id = EXCLUDED.enrollment_id, term_id = EXCLUDED.term_id, status = EXCLUDED.status,
-      remarks = EXCLUDED.remarks, modified_by = auth.uid(), updated_at = now();
+      remarks = EXCLUDED.remarks, modified_by = public.current_user_id(), updated_at = now();
     v_count := v_count + 1;
   END LOOP;
   RETURN v_count;
@@ -590,7 +590,7 @@ CREATE OR REPLACE FUNCTION public.save_staff_attendance(
 RETURNS integer LANGUAGE plpgsql SECURITY DEFINER SET search_path = public AS $$
 DECLARE v_record jsonb; v_count integer := 0;
 BEGIN
-  IF auth.uid() IS NULL OR NOT public.can_manage_school(p_school_id) THEN
+  IF public.current_user_id() IS NULL OR NOT public.can_manage_school(p_school_id) THEN
     RAISE EXCEPTION 'Not authorized to manage staff attendance';
   END IF;
   IF p_date > CURRENT_DATE OR p_records IS NULL OR jsonb_typeof(p_records) <> 'array' THEN
@@ -608,9 +608,9 @@ BEGIN
     END IF;
     INSERT INTO public.staff_attendance(school_id, staff_profile_id, attendance_date, status, remarks, marked_by)
     VALUES (p_school_id, (v_record->>'staff_profile_id')::uuid, p_date,
-      (v_record->>'status')::public.attendance_status, NULLIF(v_record->>'remarks', ''), auth.uid())
+      (v_record->>'status')::public.attendance_status, NULLIF(v_record->>'remarks', ''), public.current_user_id())
     ON CONFLICT (school_id, staff_profile_id, attendance_date) DO UPDATE SET
-      status = EXCLUDED.status, remarks = EXCLUDED.remarks, marked_by = auth.uid(), updated_at = now();
+      status = EXCLUDED.status, remarks = EXCLUDED.remarks, marked_by = public.current_user_id(), updated_at = now();
     v_count := v_count + 1;
   END LOOP;
   RETURN v_count;
@@ -641,9 +641,9 @@ BEGIN
     END IF;
     INSERT INTO public.assessment_scores(school_id, assessment_id, student_id, score, status, entered_by, updated_by)
     VALUES (v_assessment.school_id, p_assessment_id, (v_item->>'student_id')::uuid,
-      NULLIF(v_item->>'score', '')::numeric, 'draft', auth.uid(), auth.uid())
+      NULLIF(v_item->>'score', '')::numeric, 'draft', public.current_user_id(), public.current_user_id())
     ON CONFLICT (school_id, assessment_id, student_id) DO UPDATE SET
-      score = EXCLUDED.score, updated_by = auth.uid(), updated_at = now()
+      score = EXCLUDED.score, updated_by = public.current_user_id(), updated_at = now()
     WHERE assessment_scores.status = 'draft' OR public.can_manage_academics(v_assessment.school_id);
     IF NOT FOUND THEN RAISE EXCEPTION 'Submitted or approved scores cannot be edited without administrator authorization'; END IF;
     v_count := v_count + 1;
@@ -657,7 +657,7 @@ BEGIN
         AND (s.id IS NULL OR s.score IS NULL)) THEN
       RAISE EXCEPTION 'Every enrolled student needs a score before submission; missing scores are not zero';
     END IF;
-    UPDATE public.assessment_scores SET status = 'submitted', updated_by = auth.uid(), updated_at = now()
+    UPDATE public.assessment_scores SET status = 'submitted', updated_by = public.current_user_id(), updated_at = now()
     WHERE school_id = v_assessment.school_id AND assessment_id = p_assessment_id AND status = 'draft';
   END IF;
   RETURN v_count;
@@ -669,11 +669,11 @@ RETURNS integer LANGUAGE plpgsql SECURITY DEFINER SET search_path = public AS $$
 DECLARE v_school_id uuid; v_count integer;
 BEGIN
   SELECT school_id INTO v_school_id FROM public.assessments WHERE id = p_assessment_id;
-  IF NOT FOUND OR auth.uid() IS NULL OR NOT public.can_manage_academics(v_school_id) THEN
+  IF NOT FOUND OR public.current_user_id() IS NULL OR NOT public.can_manage_academics(v_school_id) THEN
     RAISE EXCEPTION 'Assessment not found or not authorized';
   END IF;
   UPDATE public.assessment_scores SET status = CASE WHEN p_approve THEN 'approved'::public.academic_workflow_status
-    ELSE 'reviewed'::public.academic_workflow_status END, updated_by = auth.uid(), updated_at = now()
+    ELSE 'reviewed'::public.academic_workflow_status END, updated_by = public.current_user_id(), updated_at = now()
   WHERE school_id = v_school_id AND assessment_id = p_assessment_id
     AND status = CASE WHEN p_approve THEN 'reviewed'::public.academic_workflow_status
       ELSE 'submitted'::public.academic_workflow_status END;
@@ -690,7 +690,7 @@ RETURNS integer LANGUAGE plpgsql SECURITY DEFINER SET search_path = public AS $$
 DECLARE v_subject uuid; v_student uuid; v_session uuid; v_total numeric; v_grade text; v_count integer := 0;
   v_result_id uuid;
 BEGIN
-  IF auth.uid() IS NULL OR NOT public.can_manage_academics(p_school_id) THEN
+  IF public.current_user_id() IS NULL OR NOT public.can_manage_academics(p_school_id) THEN
     RAISE EXCEPTION 'Not authorized to compute results';
   END IF;
   SELECT academic_session_id INTO v_session FROM public.academic_terms
@@ -741,7 +741,7 @@ BEGIN
       INSERT INTO public.term_results(school_id, student_id, academic_session_id, term_id,
         class_section_id, subject_id, grading_scheme_id, weighted_score, grade, created_by)
       VALUES (p_school_id, v_student, v_session, p_term_id, p_class_section_id, v_subject,
-        p_grading_scheme_id, v_total, v_grade, auth.uid())
+        p_grading_scheme_id, v_total, v_grade, public.current_user_id())
       ON CONFLICT (school_id, student_id, term_id, subject_id) DO UPDATE SET
         weighted_score = EXCLUDED.weighted_score, grade = EXCLUDED.grade,
         grading_scheme_id = EXCLUDED.grading_scheme_id, updated_at = now()
@@ -772,7 +772,7 @@ DECLARE v_school_id uuid; v_count integer;
 BEGIN
   IF p_result_ids IS NULL OR cardinality(p_result_ids) = 0 THEN RAISE EXCEPTION 'Select results to update'; END IF;
   SELECT school_id INTO v_school_id FROM public.term_results WHERE id = p_result_ids[1];
-  IF NOT FOUND OR auth.uid() IS NULL OR NOT public.can_manage_academics(v_school_id) THEN
+  IF NOT FOUND OR public.current_user_id() IS NULL OR NOT public.can_manage_academics(v_school_id) THEN
     RAISE EXCEPTION 'Result not found or not authorized';
   END IF;
   IF p_status = 'published' AND NOT public.can_manage_school(v_school_id) THEN
@@ -802,10 +802,10 @@ BEGIN
   WHERE id = ANY(p_result_ids) AND school_id = v_school_id;
   GET DIAGNOSTICS v_count = ROW_COUNT;
   INSERT INTO public.result_history(school_id, result_id, actor_user_id, action, reason, snapshot)
-  SELECT r.school_id, r.id, auth.uid(), 'status_' || p_status::text, p_reason, to_jsonb(r)
+  SELECT r.school_id, r.id, public.current_user_id(), 'status_' || p_status::text, p_reason, to_jsonb(r)
   FROM public.term_results r WHERE r.id = ANY(p_result_ids) AND r.school_id = v_school_id;
   INSERT INTO public.audit_logs(school_id, actor_user_id, action, entity_type, entity_id, details)
-  SELECT r.school_id, auth.uid(), 'result_' || p_status::text, 'term_results', r.id, '{}'::jsonb
+  SELECT r.school_id, public.current_user_id(), 'result_' || p_status::text, 'term_results', r.id, '{}'::jsonb
   FROM public.term_results r WHERE r.id = ANY(p_result_ids) AND r.school_id = v_school_id;
   RETURN v_count;
 END;
@@ -818,7 +818,7 @@ RETURNS void LANGUAGE plpgsql SECURITY DEFINER SET search_path = public AS $$
 DECLARE v_result public.term_results%ROWTYPE; v_grade text;
 BEGIN
   SELECT * INTO v_result FROM public.term_results WHERE id = p_result_id FOR UPDATE;
-  IF NOT FOUND OR NOT public.can_manage_school(v_result.school_id) OR auth.uid() IS NULL THEN
+  IF NOT FOUND OR NOT public.can_manage_school(v_result.school_id) OR public.current_user_id() IS NULL THEN
     RAISE EXCEPTION 'Result not found or not authorized';
   END IF;
   IF v_result.status <> 'published' OR COALESCE(trim(p_reason), '') = ''
@@ -835,7 +835,7 @@ BEGIN
   WHERE id = p_result_id;
   PERFORM set_config('app.result_correction_reason', '', true);
   INSERT INTO public.audit_logs(school_id, actor_user_id, action, entity_type, entity_id, details)
-  VALUES (v_result.school_id, auth.uid(), 'published_result_corrected', 'term_results', p_result_id,
+  VALUES (v_result.school_id, public.current_user_id(), 'published_result_corrected', 'term_results', p_result_id,
     jsonb_build_object('reason', trim(p_reason)));
 END;
 $$;
@@ -844,7 +844,7 @@ CREATE OR REPLACE FUNCTION public.mark_academic_notification_read(p_notification
 RETURNS void LANGUAGE plpgsql SECURITY DEFINER SET search_path = public AS $$
 BEGIN
   UPDATE public.academic_notifications SET read_at = now()
-  WHERE id = p_notification_id AND recipient_user_id = auth.uid();
+  WHERE id = p_notification_id AND recipient_user_id = public.current_user_id();
   IF NOT FOUND THEN RAISE EXCEPTION 'Notification not found or not authorized'; END IF;
 END;
 $$;
@@ -907,7 +907,7 @@ CREATE POLICY school_holidays_manage ON public.school_holidays FOR ALL TO authen
 CREATE POLICY attendance_records_read ON public.attendance_records FOR SELECT TO authenticated
   USING (public.can_view_academic_student(school_id, student_id));
 CREATE POLICY students_academic_self_read ON public.students FOR SELECT TO authenticated
-  USING (user_id = auth.uid() AND public.has_school_role(school_id, 'student'));
+  USING (user_id = public.current_user_id() AND public.has_school_role(school_id, 'student'));
 CREATE POLICY enrollments_academic_self_read ON public.enrollments FOR SELECT TO authenticated
   USING (public.can_view_academic_student(school_id, student_id));
 CREATE POLICY class_sections_academic_student_read ON public.class_sections FOR SELECT TO authenticated
@@ -932,7 +932,7 @@ CREATE POLICY staff_attendance_read ON public.staff_attendance FOR SELECT TO aut
 CREATE POLICY staff_attendance_manage ON public.staff_attendance FOR ALL TO authenticated
   USING (public.can_manage_school(school_id)) WITH CHECK (public.can_manage_school(school_id));
 CREATE POLICY academic_notifications_read ON public.academic_notifications FOR SELECT TO authenticated
-  USING (recipient_user_id = auth.uid());
+  USING (recipient_user_id = public.current_user_id());
 REVOKE INSERT, UPDATE, DELETE ON public.academic_notifications FROM authenticated;
 
 CREATE POLICY assessment_types_read ON public.assessment_types FOR SELECT TO authenticated
@@ -996,11 +996,11 @@ CREATE POLICY timetable_entries_read ON public.timetable_entries FOR SELECT TO a
     OR EXISTS (SELECT 1 FROM public.teacher_assignments ta
       JOIN public.staff_profiles sp ON sp.school_id = ta.school_id AND sp.id = ta.staff_profile_id
       WHERE ta.school_id = timetable_entries.school_id AND ta.class_section_id = timetable_entries.class_section_id
-        AND sp.user_id = auth.uid())
+        AND sp.user_id = public.current_user_id())
     OR EXISTS (SELECT 1 FROM public.class_sections cs
       JOIN public.staff_profiles sp ON sp.school_id = cs.school_id AND sp.id = cs.class_teacher_id
       WHERE cs.school_id = timetable_entries.school_id AND cs.id = timetable_entries.class_section_id
-        AND sp.user_id = auth.uid())
+        AND sp.user_id = public.current_user_id())
     OR EXISTS (SELECT 1 FROM public.enrollments e
       WHERE e.school_id = timetable_entries.school_id AND e.class_section_id = timetable_entries.class_section_id
         AND e.status = 'active' AND public.can_view_academic_student(e.school_id, e.student_id)));

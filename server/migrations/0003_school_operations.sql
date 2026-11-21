@@ -1277,24 +1277,8 @@ GRANT EXECUTE ON FUNCTION public.register_student(uuid, jsonb, jsonb),
   public.transfer_student(uuid, uuid, uuid, text, text),
   public.promote_class_students(uuid, uuid[], uuid, text) TO authenticated;
 
--- Storage is private and school-prefixed; only authorized school staff can
--- upload/read documents. Use paths beginning with the school UUID.
-INSERT INTO storage.buckets(id, name, public, file_size_limit, allowed_mime_types)
-VALUES (
-  'school-documents',
-  'school-documents',
-  false,
-  20971520,
-  ARRAY['application/pdf', 'image/jpeg', 'image/png']::text[]
-)
-ON CONFLICT (id) DO NOTHING;
-
-CREATE POLICY school_documents_read ON storage.objects FOR SELECT TO authenticated
-  USING (bucket_id = 'school-documents' AND public.can_manage_school_folder((storage.foldername(name))[1]));
-CREATE POLICY school_documents_insert ON storage.objects FOR INSERT TO authenticated
-  WITH CHECK (bucket_id = 'school-documents' AND public.can_manage_school_folder((storage.foldername(name))[1]));
-CREATE POLICY school_documents_update ON storage.objects FOR UPDATE TO authenticated
-  USING (bucket_id = 'school-documents' AND public.can_manage_school_folder((storage.foldername(name))[1]))
-  WITH CHECK (bucket_id = 'school-documents' AND public.can_manage_school_folder((storage.foldername(name))[1]));
-CREATE POLICY school_documents_delete ON storage.objects FOR DELETE TO authenticated
-  USING (bucket_id = 'school-documents' AND public.can_manage_school_folder((storage.foldername(name))[1]));
+-- LOCAL PORT NOTE: Supabase Storage section removed. The school-documents
+-- bucket and its four storage.objects policies do not exist in plain Postgres.
+-- Document storage will be re-implemented in a later step as local-disk or
+-- S3-backed storage behind Fastify endpoints, keeping the same rule (only
+-- authorized school staff may read/write paths prefixed with the school UUID).
