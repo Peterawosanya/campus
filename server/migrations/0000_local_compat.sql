@@ -33,14 +33,25 @@ CREATE OR REPLACE FUNCTION public.current_user_id()
 RETURNS uuid
 LANGUAGE sql
 STABLE
-AS $$
+AS $
   SELECT CASE
-    WHEN pg_catalog.pg_has_role(current_user, 'authenticated', 'member')
-         AND NULLIF(current_setting('app.current_user_id', true), '') ~* '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'
+    WHEN current_user = 'authenticated'::regrole
+         AND NULLIF(current_setting('app.current_user_id', true), '') ~* '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}
+
+DO $$
+BEGIN
+  IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'anon') THEN
+    CREATE ROLE anon NOLOGIN;
+  END IF;
+  IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'authenticated') THEN
+    CREATE ROLE authenticated NOLOGIN;
+  END IF;
+END $$;
+
     THEN current_setting('app.current_user_id', true)::uuid
     ELSE NULL
   END;
-$$;
+$;
 
 DO $$
 BEGIN
